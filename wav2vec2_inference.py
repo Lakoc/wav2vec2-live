@@ -1,18 +1,36 @@
 import soundfile as sf
 import torch
-from transformers import AutoModelForCTC, AutoProcessor, Wav2Vec2Processor
-
-# Improvements: 
-# - convert non 16 khz sample rates
-# - inference time log
+from transformers import AutoModelForCTC, AutoProcessor, Wav2Vec2Processor, Wav2Vec2CTCTokenizer,Wav2Vec2FeatureExtractor, Wav2Vec2ProcessorWithLM
+import json
+from pyctcdecode import build_ctcdecoder
 
 class Wave2Vec2Inference:
     def __init__(self,model_name, hotwords=[], use_lm_if_possible=True, use_gpu=True):
         self.device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
-        if use_lm_if_possible:            
-            self.processor = AutoProcessor.from_pretrained(model_name)
+        if use_lm_if_possible:
+            vocab_dict = json.load(open(f"{model_name}/vocab.json"))
+
+            decoder = build_ctcdecoder(
+                labels=list(vocab_dict.keys()),
+                kenlm_model_path=f"{model_name}/language_model/3gram.bin",
+                alpha=0.5,
+                unigrams=open(f"{model_name}/language_model/unigrams.txt").read().splitlines()
+            )
+            tokenizer = Wav2Vec2CTCTokenizer(f"{model_name}/vocab.json", unk_token="[UNK]",
+                                             pad_token="[PAD]",
+                                             word_delimiter_token="|")
+            tokenizer.add_special_tokens({'additional_special_tokens': ['[HES]', '[SPELL]']})
+
+            feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0,
+                                                         do_normalize=True, return_attention_mask=True)
+            feature_extractor._processor_class = "Wav2Vec2ProcessorWithLM"
+            self.processor = Wav2Vec2ProcessorWithLM(
+                feature_extractor=feature_extractor,
+                tokenizer=tokenizer,
+                decoder=decoder
+            )
         else:
-            self.processor = Wav2Vec2Processor.from_pretrained(model_name)
+            self.processor = Wav2Vec2Processor.from_pretrained(model_name, return_attention_mask=True)
         self.model = AutoModelForCTC.from_pretrained(model_name)
         self.model.to(self.device)
         self.hotwords = hotwords
@@ -62,6 +80,6 @@ class Wave2Vec2Inference:
     
 if __name__ == "__main__":
     print("Model test")
-    asr = Wave2Vec2Inference("oliverguhr/wav2vec2-large-xlsr-53-german-cv9")
-    text = asr.file_to_text("test.wav")
+    asr = Wave2Vec2Inference("checkpoint-115000", use_lm_if_possible=True, use_gpu=False)
+    text = asr.file_to_text("untitled.wav")
     print(text)
